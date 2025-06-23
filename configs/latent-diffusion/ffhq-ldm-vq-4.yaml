@@ -63,11 +63,11 @@ data:
     num_workers: 5
     wrap: false
     train:
-      target: taming.data.faceshq.FFHQTrain
+      target: ldm.data.faceshq.FFHQTrain
       params:
         size: 256
     validation:
-      target: taming.data.faceshq.FFHQValidation
+      target: ldm.data.faceshq.FFHQValidation
       params:
         size: 256
 

@@ -22,7 +22,7 @@ model:
       - 16
       dropout: 0.0
     lossconfig:
-      target: taming.modules.losses.vqperceptual.VQLPIPSWithDiscriminator
+      target: ldm.modules.losses.vqperceptual.VQLPIPSWithDiscriminator
       params:
         disc_conditional: false
         disc_in_channels: 3
