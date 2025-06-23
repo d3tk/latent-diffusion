@@ -22,7 +22,7 @@ from ldm.util import instantiate_from_config
 
 
 # python3 main.py configs/latent-diffusion/cin-ldm-test-small.yaml
-# torchrun --nproc_per_node=1 main.py configs/latent-diffusion/small-test.yaml
+# CUDA_VISIBLE_DEVICES=1,2 torchrun --nproc_per_node=2 main.py configs/latent-diffusion/small-test.yaml
 
 
 def seed_everything(seed):

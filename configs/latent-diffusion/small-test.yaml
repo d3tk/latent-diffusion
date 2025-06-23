@@ -88,7 +88,7 @@ model:
 data:
   target: main.DataModuleFromConfig  # Use the pure PyTorch version from main.py
   params:
-    batch_size: 64  # Smaller batch size (was 64)
+    batch_size: 256  # Smaller batch size (was 64)
     num_workers: 2  # Fewer workers (was 12)
     wrap: false
     train:
