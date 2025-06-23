@@ -511,9 +511,7 @@ class PyTorchTrainer:
         # Setup schedulers
         if not self.schedulers:
             self.schedulers = [
-                optim.lr_scheduler.CosineAnnealingLR(
-                    opt, T_max=config.get("epochs", 100)
-                )
+                optim.lr_scheduler.CosineAnnealingLR(opt, T_max=config["epochs"])
                 for opt in self.optimizers
             ]
 
@@ -522,27 +520,19 @@ class PyTorchTrainer:
 
         # Setup wandb logger
         # Initialize wandb with proper configuration
-        if opt.no_wandb:
+        if config.get("no_wandb", False):
             print("Wandb logging disabled by --no-wandb flag")
             self.wandb_initialized = False
         else:
             try:
                 # Get wandb config from command line args or config
-                wandb_project = opt.project or config.get(
-                    "wandb_project", "latent-diffusion"
-                )
-                wandb_entity = opt.wandb_entity or config.get(
-                    "wandb_entity", None
-                )  # Can be None for personal account
-                wandb_name = (
-                    opt.wandb_name
-                    or opt.name
-                    or config.get("wandb_name", f"latent-diffusion-{now}")
-                )
+                wandb_project = config.wandb.project
+                wandb_entity = config.wandb.entity
+                wandb_name = config.wandb.name
 
                 # Check if we should resume a wandb run
                 wandb_run_id = None
-                if opt.resume and os.path.exists(ckpt):
+                if config.get("resume", False) and os.path.exists(ckpt):
                     # Try to load wandb run ID from checkpoint or logdir
                     run_id_file = os.path.join(logdir, "wandb_run_id.txt")
                     if os.path.exists(run_id_file):
@@ -857,7 +847,7 @@ class PyTorchTrainer:
 
             # Train
             train_loss = self.train_epoch(
-                train_loader, self.config.get("accumulate_grad_batches", 1)
+                train_loader, self.config["accumulate_grad_batches"]
             )
 
             # Validate
@@ -871,7 +861,7 @@ class PyTorchTrainer:
                     self.save_checkpoint("best.ckpt")
 
             # Save checkpoint periodically
-            if epoch % self.config.get("checkpoint_frequency", 10) == 0:
+            if epoch % self.config["checkpoint_frequency"] == 0:
                 self.save_checkpoint(f"epoch_{epoch:06}.ckpt")
 
             # Save last checkpoint
@@ -913,237 +903,162 @@ class PyTorchTrainer:
 
 
 if __name__ == "__main__":
-    # custom parser to specify config files, train, test and debug mode,
-    # postfix, resume.
-    # `--key value` arguments are interpreted as arguments to the trainer.
-    # `nested.key=value` arguments are interpreted as config parameters.
-    # configs are merged from left-to-right followed by command line parameters.
+    # Enforce config-only usage: require a single config path as argument
+    if len(sys.argv) < 2:
+        print("Usage: python main.py <config.yaml>")
+        sys.exit(1)
+    config_path = sys.argv[1]
 
-    # model:
-    #   base_learning_rate: float
-    #   target: path to lightning module
-    #   params:
-    #       key: value
-    # data:
-    #   target: main.DataModuleFromConfig
-    #   params:
-    #      batch_size: int
-    #      wrap: bool
-    #      train:
-    #          target: path to train dataset
-    #          params:
-    #              key: value
-    #      validation:
-    #          target: path to validation dataset
-    #          params:
-    #              key: value
-    #      test:
-    #          target: path to test dataset
-    #          params:
-    #              key: value
+    # Load config (support base config merging)
+    config = OmegaConf.load(config_path)
+    if "base" in config:
+        base_config = OmegaConf.load(config.base)
+        config = OmegaConf.merge(base_config, config)
 
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-
-    # add cwd for convenience and to make classes in this file available when
-    # running as `python main.py`
-    # (in particular `main.DataModuleFromConfig`)
     sys.path.append(os.getcwd())
 
-    parser = get_parser()
+    # Read all settings from config sections
+    training_cfg = config["training"]
+    logging_cfg = config["logging"]
+    wandb_cfg = config["wandb"]
 
-    opt, unknown = parser.parse_known_args()
-    if opt.name and opt.resume:
-        raise ValueError(
-            "-n/--name and -r/--resume cannot be specified both."
-            "If you want to resume training in a new log folder, "
-            "use -n/--name in combination with --resume_from_checkpoint"
-        )
-    if opt.resume:
-        if not os.path.exists(opt.resume):
-            raise ValueError("Cannot find {}".format(opt.resume))
-        if os.path.isfile(opt.resume):
-            paths = opt.resume.split("/")
-            logdir = "/".join(paths[:-2])
-            ckpt = opt.resume
-        else:
-            assert os.path.isdir(opt.resume), opt.resume
-            logdir = opt.resume.rstrip("/")
-            ckpt = os.path.join(logdir, "checkpoints", "last.ckpt")
-
-        base_configs = sorted(glob.glob(os.path.join(logdir, "configs/*.yaml")))
-        opt.base = base_configs + opt.base
-        _tmp = logdir.split("/")
-        nowname = _tmp[-1]
+    # Set up logdir, name, resume, etc. from config
+    logdir = logging_cfg["logdir"]
+    name = logging_cfg["name"]
+    resume = logging_cfg["resume"]
+    postfix = logging_cfg["postfix"]
+    if name:
+        run_dir = f"{name}{postfix}"
     else:
-        if opt.name:
-            name = "_" + opt.name
-        elif opt.base:
-            cfg_fname = os.path.split(opt.base[0])[-1]
-            cfg_name = os.path.splitext(cfg_fname)[0]
-            name = "_" + cfg_name
-        else:
-            name = ""
-        nowname = now + name + opt.postfix
-        logdir = os.path.join(opt.logdir, nowname)
-
+        cfg_fname = os.path.splitext(os.path.basename(config_path))[0]
+        run_dir = f"{cfg_fname}{postfix}"
+    logdir = os.path.join(logdir, run_dir)
     ckptdir = os.path.join(logdir, "checkpoints")
     cfgdir = os.path.join(logdir, "configs")
-    seed_everything(opt.seed)
 
-    try:
-        # init and save configs
-        configs = [OmegaConf.load(cfg) for cfg in opt.base]
-        cli = OmegaConf.from_dotlist(unknown)
-        config = OmegaConf.merge(*configs, cli)
-        # print the config to verify
-        # print(f"before override: {config}")
-        # Add command line arguments to config
-        config.epochs = opt.epochs
-        config.gpus = opt.gpus
-        config.accumulate_grad_batches = opt.accumulate_grad_batches
-        config.checkpoint_frequency = opt.checkpoint_frequency
-        config.log_frequency = opt.log_frequency
-        # print(f"after override: {config}")
-        # Setup device
-        if torch.cuda.is_available() and opt.gpus:
-            device_ids = [int(x.strip()) for x in opt.gpus.split(",")]
-            device = torch.device(f"cuda:{device_ids[0]}")
-            if len(device_ids) > 1:
-                print(f"Using multiple GPUs: {device_ids}")
-        else:
-            device = torch.device("cpu")
-            print("Using CPU")
+    # Seed
+    seed = training_cfg["seed"]
+    seed_everything(seed)
 
-        # model
-        model = instantiate_from_config(config.model)
-        model = model.to(device)
-        model.device = device  # Add device attribute for compatibility
+    # Setup device for DDP
+    if torch.cuda.is_available():
+        import torch.distributed as dist
+        import os
 
-        # Fix device mismatch for logvar tensor if it exists
-        if hasattr(model, "logvar") and model.logvar.device != device:
-            model.logvar = model.logvar.to(device)
-            if model.learn_logvar:
-                # If logvar is a parameter, we need to update the parameter reference
-                for name, param in model.named_parameters():
-                    if name == "logvar":
-                        param.data = model.logvar.data
-                        break
+        dist.init_process_group(backend="nccl")
+        local_rank = torch.distributed.get_rank()
+        device = torch.device("cuda", local_rank)
+        torch.cuda.set_device(device)
+    else:
+        device = torch.device("cpu")
+        print("Using CPU")
 
-        # data
-        data = instantiate_from_config(config.data)
-        # NOTE calling these ourselves should not be necessary but it is.
-        data.prepare_data()
-        data.setup()
-        print("#### Data #####")
-        for k in data.datasets:
-            print(
-                f"{k}, {data.datasets[k].__class__.__name__}, {len(data.datasets[k])}"
-            )
+    # Model
+    model = instantiate_from_config(config.model)
+    model = model.to(device)
+    model.device = device
+    if torch.cuda.is_available():
+        from torch.nn.parallel import DistributedDataParallel as DDP
 
-        # configure learning rate
-        bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
-        if device.type == "cuda":
-            ngpu = len(device_ids) if len(device_ids) > 1 else 1
-        else:
-            ngpu = 1
-        accumulate_grad_batches = config.accumulate_grad_batches
-        # print(f"accumulate_grad_batches = {accumulate_grad_batches}")
+        model = DDP(model, device_ids=[local_rank])
+    if hasattr(model, "logvar") and model.logvar.device != device:
+        model.logvar = model.logvar.to(device)
+        if getattr(model, "learn_logvar", False):
+            for name, param in model.named_parameters():
+                if name == "logvar":
+                    param.data = model.logvar.data
+                    break
 
-        if opt.scale_lr:
-            model.learning_rate = accumulate_grad_batches * ngpu * bs * base_lr
-            print(
-                "Setting learning rate to {:.2e} = {} (accumulate_grad_batches) * {} (num_gpus) * {} (batchsize) * {:.2e} (base_lr)".format(
-                    model.learning_rate, accumulate_grad_batches, ngpu, bs, base_lr
-                )
-            )
-        else:
-            model.learning_rate = base_lr
-            print("++++ NOT USING LR SCALING ++++")
-            print(f"Setting learning rate to {model.learning_rate:.2e}")
+    # Data
+    data = instantiate_from_config(config.data)
+    data.prepare_data()
+    data.setup()
+    print("#### Data #####")
+    for k in data.datasets:
+        print(f"{k}, {data.datasets[k].__class__.__name__}, {len(data.datasets[k])}")
 
-        # Setup callbacks
-        callbacks = []
-
-        # Setup callback
-        setup_callback = SetupCallback(
-            opt.resume, now, logdir, ckptdir, cfgdir, config, OmegaConf.create()
+    # Learning rate
+    bs = config.data.params.batch_size
+    base_lr = config.model.base_learning_rate
+    if device.type == "cuda":
+        ngpu = torch.distributed.get_world_size()
+    else:
+        ngpu = 1
+    accumulate_grad_batches = training_cfg["accumulate_grad_batches"]
+    scale_lr = training_cfg["scale_lr"]
+    if scale_lr:
+        model.module.learning_rate = (
+            accumulate_grad_batches * ngpu * bs * base_lr
+            if hasattr(model, "module")
+            else accumulate_grad_batches * ngpu * bs * base_lr
         )
-        setup_callback.setup()
-
-        # Image logger callback
-        image_logger = ImageLogger(
-            epoch_frequency=5, max_images=4, clamp=True, save_dir=logdir
+        print(
+            f"Setting learning rate to {model.module.learning_rate if hasattr(model, 'module') else model.learning_rate:.2e} = {accumulate_grad_batches} (accumulate_grad_batches) * {ngpu} (num_gpus) * {bs} (batchsize) * {base_lr:.2e} (base_lr)"
         )
-        callbacks.append(image_logger)
-
-        # CUDA callback
-        cuda_callback = CUDACallback()
-        callbacks.append(cuda_callback)
-
-        # Create trainer
-        trainer = PyTorchTrainer(
-            model=model,
-            data=data,
-            config=config,
-            logdir=logdir,
-            ckptdir=ckptdir,
-            device=device,
-            callbacks=callbacks,
+    else:
+        model.module.learning_rate = base_lr if hasattr(model, "module") else base_lr
+        print("++++ NOT USING LR SCALING ++++")
+        print(
+            f"Setting learning rate to {model.module.learning_rate if hasattr(model, 'module') else model.learning_rate:.2e}"
         )
 
-        # Load checkpoint if resuming
-        if opt.resume and os.path.exists(ckpt):
+    # Setup callbacks
+    callbacks = []
+    setup_callback = SetupCallback(
+        resume, now, logdir, ckptdir, cfgdir, config, OmegaConf.create()
+    )
+    setup_callback.setup()
+    image_logger = ImageLogger(
+        epoch_frequency=5, max_images=4, clamp=True, save_dir=logdir
+    )
+    callbacks.append(image_logger)
+    cuda_callback = CUDACallback()
+    callbacks.append(cuda_callback)
+
+    # Trainer
+    trainer = PyTorchTrainer(
+        model=model,
+        data=data,
+        config=config,
+        logdir=logdir,
+        ckptdir=ckptdir,
+        device=device,
+        callbacks=callbacks,
+    )
+
+    # Resume logic
+    if resume:
+        if os.path.isfile(resume):
+            ckpt = resume
+        else:
+            ckpt = os.path.join(resume, "checkpoints", "last.ckpt")
+        if os.path.exists(ckpt):
             print(f"Loading checkpoint from {ckpt}")
             trainer.load_checkpoint(ckpt)
 
-        # allow checkpointing via USR1
-        def melk(*args, **kwargs):
-            # run all checkpoint hooks
-            print("Summoning checkpoint.")
-            trainer.save_checkpoint()
+    # Signal handlers (optional)
+    def melk(*args, **kwargs):
+        print("Summoning checkpoint.")
+        trainer.save_checkpoint()
 
-        def divein(*args, **kwargs):
-            import pudb
+    def divein(*args, **kwargs):
+        import pudb
 
-            pudb.set_trace()
+        pudb.set_trace()
 
-        import signal
+    import signal
 
-        signal.signal(signal.SIGUSR1, melk)
-        signal.signal(signal.SIGUSR2, divein)
+    signal.signal(signal.SIGUSR1, melk)
+    signal.signal(signal.SIGUSR2, divein)
 
-        # run
-        if opt.train:
-            try:
-                trainer.fit(config.epochs)
-            except Exception:
-                melk()
-                raise
-        if not opt.no_test:
-            test_loader = data.test_dataloader()
-            trainer.test(test_loader)
-
-    except Exception:
-        if opt.debug:
-            try:
-                import pudb as debugger
-            except ImportError:
-                import pdb as debugger
-            debugger.post_mortem()
-        raise
-    finally:
-        # Ensure wandb is properly finished
+    # Run
+    if training_cfg["train"]:
         try:
-            if "trainer" in locals() and hasattr(trainer, "finish_wandb"):
-                trainer.finish_wandb()
-            elif hasattr(wandb, "run") and wandb.run is not None:
-                wandb.finish()
-        except Exception as e:
-            print(f"Warning: Failed to finish wandb in cleanup: {e}")
-
-        # move newly created debug project to debug_runs
-        if opt.debug and not opt.resume:
-            dst, name = os.path.split(logdir)
-            dst = os.path.join(dst, "debug_runs", name)
-            os.makedirs(os.path.split(dst)[0], exist_ok=True)
-            os.rename(logdir, dst)
+            trainer.fit(training_cfg["epochs"])
+        except Exception:
+            melk()
+            raise
+    if not training_cfg["no_test"]:
+        test_loader = data.test_dataloader()
+        trainer.test(test_loader)

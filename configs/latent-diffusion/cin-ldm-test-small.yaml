@@ -62,21 +62,23 @@ model:
       params:
         embed_dim: 256  # Smaller embedding (was 512)
         key: class_label
+
 data:
   target: main.DataModuleFromConfig  # Use the pure PyTorch version from main.py
   params:
-    batch_size: 256  # Smaller batch size (was 64)
-    num_workers: 32  # Fewer workers (was 12)
+    batch_size: 64  # Smaller batch size (was 64)
+    num_workers: 2  # Fewer workers (was 12)
     wrap: false
     train:
       target: ldm.data.imagenet.ImageNetTrain
       params:
-        data_root: /mnt/e/data/ImageNet/ILSVRC/Data/CLS-LOC
+        data_root: /datasets/ilsvrc/current/
         config:
           size: 128  # Smaller image size (was 256)
     validation:
       target: ldm.data.imagenet.ImageNetValidation
       params:
-        data_root: /mnt/e/data/ImageNet/ILSVRC/Data/CLS-LOC
+        data_root: /datasets/ilsvrc/current/
         config:
           size: 128  # Smaller image size (was 256)
+
