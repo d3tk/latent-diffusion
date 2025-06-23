@@ -15,7 +15,6 @@ import ldm.data.utils as tdu
 from ldm.data.taming_imagenet import (
     str_to_indices,
     give_synsets_from_indices,
-    download,
     retrieve,
 )
 from ldm.data.taming_imagenet import ImagePaths
@@ -23,7 +22,14 @@ from ldm.data.taming_imagenet import ImagePaths
 from ldm.modules.image_degradation import degradation_fn_bsr, degradation_fn_bsr_light
 
 
-def synset2idx(path_to_yaml="data/index_synset.yaml"):
+def synset2idx(path_to_yaml=None):
+    if path_to_yaml is None:
+        # Use metadata files from the repository instead of dataset directory
+        repo_data_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "ldm/data/in-files",
+        )
+        path_to_yaml = os.path.join(repo_data_dir, "index_synset.yaml")
     with open(path_to_yaml) as f:
         di2s = yaml.load(f)
     return dict((v, k) for k, v in di2s.items())
@@ -74,28 +80,45 @@ class ImageNetBase(Dataset):
             return relpaths
 
     def _prepare_synset_to_human(self):
-        SIZE = 2655750
-        URL = "https://heibox.uni-heidelberg.de/f/9f28e956cd304264bb82/?dl=1"
-        self.human_dict = os.path.join(self.root, "synset_human.txt")
-        if (
-            not os.path.exists(self.human_dict)
-            or not os.path.getsize(self.human_dict) == SIZE
-        ):
-            download(URL, self.human_dict)
+        # Use metadata files from the repository instead of dataset directory
+        repo_data_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "ldm/data/in-files",
+        )
+        self.human_dict = os.path.join(repo_data_dir, "synset_human.txt")
+        if not os.path.exists(self.human_dict):
+            raise FileNotFoundError(
+                f"synset_human.txt not found at {self.human_dict}. "
+                "Please ensure the metadata files are present in the ldm/data/in-files directory."
+            )
 
     def _prepare_idx_to_synset(self):
-        URL = "https://heibox.uni-heidelberg.de/f/d835d5b6ceda4d3aa910/?dl=1"
-        self.idx2syn = os.path.join(self.root, "index_synset.yaml")
+        # Use metadata files from the repository instead of dataset directory
+        repo_data_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "ldm/data/in-files",
+        )
+        self.idx2syn = os.path.join(repo_data_dir, "index_synset.yaml")
         if not os.path.exists(self.idx2syn):
-            download(URL, self.idx2syn)
+            raise FileNotFoundError(
+                f"index_synset.yaml not found at {self.idx2syn}. "
+                "Please ensure the metadata files are present in the ldm/data/in-files directory."
+            )
 
     def _prepare_human_to_integer_label(self):
-        URL = "https://heibox.uni-heidelberg.de/f/2362b797d5be43b883f6/?dl=1"
+        # Use metadata files from the repository instead of dataset directory
+        repo_data_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "ldm/data/in-files",
+        )
         self.human2integer = os.path.join(
-            self.root, "imagenet1000_clsidx_to_labels.txt"
+            repo_data_dir, "imagenet1000_clsidx_to_labels.txt"
         )
         if not os.path.exists(self.human2integer):
-            download(URL, self.human2integer)
+            raise FileNotFoundError(
+                f"imagenet1000_clsidx_to_labels.txt not found at {self.human2integer}. "
+                "Please ensure the metadata files are present in the ldm/data/in-files directory."
+            )
         with open(self.human2integer, "r") as f:
             lines = f.read().splitlines()
             assert len(lines) == 1000
@@ -206,43 +229,15 @@ class ImageNetTrain(ImageNetBase):
                 with open(self.txt_filelist, "w") as f:
                     f.write(filelist)
                 print(f"Created filelist with {len(filelist.splitlines())} files")
-        elif not tdu.is_prepared(self.root):
-            # Standard structure - use original logic
-            print("Preparing dataset {} in {}".format(self.NAME, self.root))
-
-            datadir = self.datadir
-            if not os.path.exists(datadir):
-                path = os.path.join(self.root, self.FILES[0])
-                if (
-                    not os.path.exists(path)
-                    or not os.path.getsize(path) == self.SIZES[0]
-                ):
-                    import academictorrents as at
-
-                    atpath = at.get(self.AT_HASH, datastore=self.root)
-                    assert atpath == path
-
-                print("Extracting {} to {}".format(path, datadir))
-                os.makedirs(datadir, exist_ok=True)
-                with tarfile.open(path, "r:") as tar:
-                    tar.extractall(path=datadir)
-
-                print("Extracting sub-tars.")
-                subpaths = sorted(glob.glob(os.path.join(datadir, "*.tar")))
-                for subpath in tqdm(subpaths):
-                    subdir = subpath[: -len(".tar")]
-                    os.makedirs(subdir, exist_ok=True)
-                    with tarfile.open(subpath, "r:") as tar:
-                        tar.extractall(path=subdir)
-
-            filelist = glob.glob(os.path.join(datadir, "**", "*.JPEG"))
-            filelist = [os.path.relpath(p, start=datadir) for p in filelist]
-            filelist = sorted(filelist)
-            filelist = "\n".join(filelist) + "\n"
-            with open(self.txt_filelist, "w") as f:
-                f.write(filelist)
-
-            tdu.mark_prepared(self.root)
+        elif not os.path.exists(self.txt_filelist):
+            raise FileNotFoundError(
+                f"filelist.txt not found at {self.txt_filelist}. "
+                "Please ensure the ImageNet dataset is properly prepared. "
+                "You can either:\n"
+                "1. Prepare the dataset manually and place it in the expected location\n"
+                "2. Use a custom data_root with existing ImageNet structure\n"
+                "3. Create the filelist.txt manually from your ImageNet data"
+            )
 
 
 class ImageNetValidation(ImageNetBase):
@@ -306,55 +301,15 @@ class ImageNetValidation(ImageNetBase):
                 print(
                     f"Created validation filelist with {len(filelist.splitlines())} files"
                 )
-        elif not tdu.is_prepared(self.root):
-            # Standard structure - use original logic
-            print("Preparing dataset {} in {}".format(self.NAME, self.root))
-
-            datadir = self.datadir
-            if not os.path.exists(datadir):
-                path = os.path.join(self.root, self.FILES[0])
-                if (
-                    not os.path.exists(path)
-                    or not os.path.getsize(path) == self.SIZES[0]
-                ):
-                    import academictorrents as at
-
-                    atpath = at.get(self.AT_HASH, datastore=self.root)
-                    assert atpath == path
-
-                print("Extracting {} to {}".format(path, datadir))
-                os.makedirs(datadir, exist_ok=True)
-                with tarfile.open(path, "r:") as tar:
-                    tar.extractall(path=datadir)
-
-                vspath = os.path.join(self.root, self.FILES[1])
-                if (
-                    not os.path.exists(vspath)
-                    or not os.path.getsize(vspath) == self.SIZES[1]
-                ):
-                    download(self.VS_URL, vspath)
-
-                with open(vspath, "r") as f:
-                    synset_dict = f.read().splitlines()
-                    synset_dict = dict(line.split() for line in synset_dict)
-
-                print("Reorganizing into synset folders")
-                synsets = np.unique(list(synset_dict.values()))
-                for s in synsets:
-                    os.makedirs(os.path.join(datadir, s), exist_ok=True)
-                for k, v in synset_dict.items():
-                    src = os.path.join(datadir, k)
-                    dst = os.path.join(datadir, v)
-                    shutil.move(src, dst)
-
-            filelist = glob.glob(os.path.join(datadir, "**", "*.JPEG"))
-            filelist = [os.path.relpath(p, start=datadir) for p in filelist]
-            filelist = sorted(filelist)
-            filelist = "\n".join(filelist) + "\n"
-            with open(self.txt_filelist, "w") as f:
-                f.write(filelist)
-
-            tdu.mark_prepared(self.root)
+        elif not os.path.exists(self.txt_filelist):
+            raise FileNotFoundError(
+                f"filelist.txt not found at {self.txt_filelist}. "
+                "Please ensure the ImageNet validation dataset is properly prepared. "
+                "You can either:\n"
+                "1. Prepare the dataset manually and place it in the expected location\n"
+                "2. Use a custom data_root with existing ImageNet validation structure\n"
+                "3. Create the filelist.txt manually from your ImageNet validation data"
+            )
 
 
 class ImageNetSR(Dataset):
