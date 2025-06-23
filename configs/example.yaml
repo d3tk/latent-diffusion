@@ -1,0 +1,43 @@
+# Example configuration file for training
+# Usage: python main.py configs/example.yaml
+
+base: configs/base.yaml  # Inherit from base config
+
+# Override specific settings
+training:
+  epochs: 10
+  seed: 42
+  accumulate_grad_batches: 4
+  checkpoint_frequency: 2
+  log_frequency: 50
+  train: true
+  no_test: false
+  scale_lr: true
+  debug: false
+
+logging:
+  name: "example_experiment"
+  postfix: "_test"
+
+wandb:
+  name: "example-run"
+  enabled: true
+
+# Model configuration (this would be specific to your model)
+model:
+  target: ldm.models.diffusion.ddpm.LatentDiffusion
+  params:
+    linear_start: 0.00085
+    linear_end: 0.0120
+    num_timesteps_cond: 1
+    log_every_t: 200
+    timesteps: 1000
+    first_stage_key: "jpg"
+    cond_stage_key: "txt"
+    image_size: 64
+    channels: 4
+    cond_stage_trainable: false
+    conditioning_key: crossattn
+    monitor: val/loss_simple_ema
+    scale_factor: 0.18215
+    use_ema: False 

@@ -94,13 +94,13 @@ data:
     train:
       target: ldm.data.imagenet.ImageNetTrain
       params:
-        data_root: /datasets/ilsvrc/current/
+        data_root: /mnt/e/data/ImageNet/ILSVRC/Data/CLS-LOC
         config:
           size: 128  # Smaller image size (was 256)
     validation:
       target: ldm.data.imagenet.ImageNetValidation
       params:
-        data_root: /datasets/ilsvrc/current/
+        data_root: /mnt/e/data/ImageNet/ILSVRC/Data/CLS-LOC
         config:
           size: 128  # Smaller image size (was 256)
 

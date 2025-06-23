@@ -1,4 +1,4 @@
-import argparse, os, sys, datetime, glob, importlib, csv
+import os, sys, datetime, glob, importlib, csv
 import numpy as np
 import time
 import torch
@@ -21,7 +21,8 @@ from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
 
 
-# python3 main.py --base configs/latent-diffusion/cin-ldm-test-small.yaml --train --gpus 0 --epochs 10 --batch_size 4 --accumulate_grad_batches 4 --log_frequency 50 --checkpoint_frequency 2 --name "imagenet_test_small" --seed 42  # For reproducibility
+# python3 main.py configs/latent-diffusion/cin-ldm-test-small.yaml
+# torchrun --nproc_per_node=1 main.py configs/latent-diffusion/small-test.yaml
 
 
 def seed_everything(seed):
@@ -44,160 +45,6 @@ def rank_zero_only(func):
 def rank_zero_info(message):
     """Print info message only on rank 0"""
     print(message)
-
-
-def get_parser(**parser_kwargs):
-    def str2bool(v):
-        if isinstance(v, bool):
-            return v
-        if v.lower() in ("yes", "true", "t", "y", "1"):
-            return True
-        elif v.lower() in ("no", "false", "f", "n", "0"):
-            return False
-        else:
-            raise argparse.ArgumentTypeError("Boolean value expected.")
-
-    parser = argparse.ArgumentParser(**parser_kwargs)
-    parser.add_argument(
-        "-n",
-        "--name",
-        type=str,
-        const=True,
-        default="",
-        nargs="?",
-        help="postfix for logdir",
-    )
-    parser.add_argument(
-        "-r",
-        "--resume",
-        type=str,
-        const=True,
-        default="",
-        nargs="?",
-        help="resume from logdir or checkpoint in logdir",
-    )
-    parser.add_argument(
-        "-b",
-        "--base",
-        nargs="*",
-        metavar="base_config.yaml",
-        help="paths to base configs. Loaded from left-to-right. "
-        "Parameters can be overwritten or added with command-line options of the form `--key value`.",
-        default=list(),
-    )
-    parser.add_argument(
-        "-t",
-        "--train",
-        type=str2bool,
-        const=True,
-        default=False,
-        nargs="?",
-        help="train",
-    )
-    parser.add_argument(
-        "--no-test",
-        type=str2bool,
-        const=True,
-        default=False,
-        nargs="?",
-        help="disable test",
-    )
-    parser.add_argument(
-        "-p", "--project", help="name of new or path to existing project"
-    )
-    parser.add_argument(
-        "-d",
-        "--debug",
-        type=str2bool,
-        nargs="?",
-        const=True,
-        default=False,
-        help="enable post-mortem debugging",
-    )
-    parser.add_argument(
-        "-s",
-        "--seed",
-        type=int,
-        default=23,
-        help="seed for seed_everything",
-    )
-    parser.add_argument(
-        "-f",
-        "--postfix",
-        type=str,
-        default="",
-        help="post-postfix for default name",
-    )
-    parser.add_argument(
-        "-l",
-        "--logdir",
-        type=str,
-        default="logs",
-        help="directory for logging dat shit",
-    )
-    parser.add_argument(
-        "--scale_lr",
-        type=str2bool,
-        nargs="?",
-        const=True,
-        default=True,
-        help="scale base-lr by ngpu * batch_size * n_accumulate",
-    )
-    # Add PyTorch-specific arguments
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=100,
-        help="number of epochs to train",
-    )
-    parser.add_argument(
-        "--gpus",
-        type=str,
-        default="0",
-        help="comma-separated list of gpu ids to use",
-    )
-    parser.add_argument(
-        "--accumulate_grad_batches",
-        type=int,
-        default=1,
-        help="number of batches to accumulate gradients",
-    )
-    parser.add_argument(
-        "--checkpoint_frequency",
-        type=int,
-        default=10,
-        help="save checkpoint every N epochs",
-    )
-    parser.add_argument(
-        "--log_frequency",
-        type=int,
-        default=10,
-        help="log metrics every N steps",
-    )
-    parser.add_argument(
-        "--wandb-entity",
-        type=str,
-        default="sar-diffusion",
-        help="wandb entity (username or team name)",
-    )
-    parser.add_argument(
-        "--wandb-project",
-        type=str,
-        default="simple-vae-testing",
-        help="wandb project name",
-    )
-    parser.add_argument(
-        "--wandb-name",
-        type=str,
-        default="test-run",
-        help="wandb run name (overrides --name for wandb)",
-    )
-    parser.add_argument(
-        "--no-wandb",
-        action="store_true",
-        help="disable wandb logging",
-    )
-    return parser
 
 
 class WrappedDataset(Dataset):
@@ -501,9 +348,15 @@ class PyTorchTrainer:
                 self.schedulers = []
         else:
             # Default optimizer
+            # Handle DDP-wrapped models when accessing learning_rate
+            if hasattr(model, "module"):
+                learning_rate = model.module.learning_rate
+            else:
+                learning_rate = model.learning_rate
+
             self.optimizers = [
                 optim.AdamW(
-                    self.model.parameters(), lr=model.learning_rate, weight_decay=0.01
+                    self.model.parameters(), lr=learning_rate, weight_decay=0.01
                 )
             ]
             self.schedulers = []
@@ -511,7 +364,7 @@ class PyTorchTrainer:
         # Setup schedulers
         if not self.schedulers:
             self.schedulers = [
-                optim.lr_scheduler.CosineAnnealingLR(opt, T_max=config["epochs"])
+                optim.lr_scheduler.CosineAnnealingLR(opt, T_max=config.training.epochs)
                 for opt in self.optimizers
             ]
 
@@ -520,19 +373,19 @@ class PyTorchTrainer:
 
         # Setup wandb logger
         # Initialize wandb with proper configuration
-        if config.get("no_wandb", False):
-            print("Wandb logging disabled by --no-wandb flag")
+        if not config.wandb.enabled:
+            print("Wandb logging disabled in config")
             self.wandb_initialized = False
         else:
             try:
-                # Get wandb config from command line args or config
+                # Get wandb config from config file
                 wandb_project = config.wandb.project
                 wandb_entity = config.wandb.entity
                 wandb_name = config.wandb.name
 
                 # Check if we should resume a wandb run
                 wandb_run_id = None
-                if config.get("resume", False) and os.path.exists(ckpt):
+                if config.logging.resume and os.path.exists(ckptdir):
                     # Try to load wandb run ID from checkpoint or logdir
                     run_id_file = os.path.join(logdir, "wandb_run_id.txt")
                     if os.path.exists(run_id_file):
@@ -562,6 +415,12 @@ class PyTorchTrainer:
                 print(f"Warning: Failed to initialize wandb: {e}")
                 print("Continuing without wandb logging...")
                 self.wandb_initialized = False
+
+    def get_actual_model(self):
+        """Get the actual model, handling DDP wrapping"""
+        if hasattr(self.model, "module"):
+            return self.model.module
+        return self.model
 
     def safe_wandb_log(self, data):
         """Safely log data to wandb, handling cases where wandb is not initialized"""
@@ -619,6 +478,7 @@ class PyTorchTrainer:
         self.model.train()
         total_loss = 0.0
         num_batches = len(train_loader)
+        actual_model = self.get_actual_model()
 
         # Call epoch start callbacks
         for callback in self.callbacks:
@@ -659,7 +519,7 @@ class PyTorchTrainer:
                     with autocast(
                         device_type="cuda", dtype=torch.bfloat16, enabled=True
                     ):
-                        result = self.model.training_step(
+                        result = actual_model.training_step(
                             batch, batch_idx, optimizer_idx
                         )
                         # Handle tuple return (loss, loss_dict) from training_step
@@ -687,7 +547,7 @@ class PyTorchTrainer:
                 # Single optimizer case
                 # Forward pass with mixed precision
                 with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                    result = self.model.training_step(batch, batch_idx)
+                    result = actual_model.training_step(batch, batch_idx)
                     # Handle tuple return (loss, loss_dict) from training_step
                     if isinstance(result, tuple):
                         loss, loss_dict = result
@@ -740,6 +600,7 @@ class PyTorchTrainer:
         self.model.eval()
         total_loss = 0.0
         num_batches = len(val_loader)
+        actual_model = self.get_actual_model()
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(
@@ -769,7 +630,7 @@ class PyTorchTrainer:
 
                 # Forward pass
                 with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                    result = self.model.validation_step(batch, batch_idx)
+                    result = actual_model.validation_step(batch, batch_idx)
                     # Handle tuple return (loss, loss_dict) from validation_step
                     if isinstance(result, tuple):
                         loss, loss_dict = result
@@ -793,6 +654,7 @@ class PyTorchTrainer:
         self.model.eval()
         total_loss = 0.0
         num_batches = len(test_loader)
+        actual_model = self.get_actual_model()
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(test_loader, desc="Testing")):
@@ -820,7 +682,7 @@ class PyTorchTrainer:
 
                 # Forward pass
                 with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                    result = self.model.test_step(batch, batch_idx)
+                    result = actual_model.test_step(batch, batch_idx)
                     # Handle tuple return (loss, loss_dict) from test_step
                     if isinstance(result, tuple):
                         loss, loss_dict = result
@@ -847,7 +709,7 @@ class PyTorchTrainer:
 
             # Train
             train_loss = self.train_epoch(
-                train_loader, self.config["accumulate_grad_batches"]
+                train_loader, self.config.training.accumulate_grad_batches
             )
 
             # Validate
@@ -861,7 +723,7 @@ class PyTorchTrainer:
                     self.save_checkpoint("best.ckpt")
 
             # Save checkpoint periodically
-            if epoch % self.config["checkpoint_frequency"] == 0:
+            if epoch % self.config.training.checkpoint_frequency == 0:
                 self.save_checkpoint(f"epoch_{epoch:06}.ckpt")
 
             # Save last checkpoint
@@ -887,7 +749,7 @@ class PyTorchTrainer:
                         sample_batch = sample_batch.to(self.device)
 
                     callback.log_img(
-                        self.model,
+                        self.get_actual_model(),
                         sample_batch,
                         0,  # batch_idx
                         self.global_step,
@@ -919,15 +781,15 @@ if __name__ == "__main__":
     sys.path.append(os.getcwd())
 
     # Read all settings from config sections
-    training_cfg = config["training"]
-    logging_cfg = config["logging"]
-    wandb_cfg = config["wandb"]
+    training_cfg = config.training
+    logging_cfg = config.logging
+    wandb_cfg = config.wandb
 
     # Set up logdir, name, resume, etc. from config
-    logdir = logging_cfg["logdir"]
-    name = logging_cfg["name"]
-    resume = logging_cfg["resume"]
-    postfix = logging_cfg["postfix"]
+    logdir = logging_cfg.logdir
+    name = logging_cfg.name
+    resume = logging_cfg.resume
+    postfix = logging_cfg.postfix
     if name:
         run_dir = f"{name}{postfix}"
     else:
@@ -938,7 +800,7 @@ if __name__ == "__main__":
     cfgdir = os.path.join(logdir, "configs")
 
     # Seed
-    seed = training_cfg["seed"]
+    seed = training_cfg.seed
     seed_everything(seed)
 
     # Setup device for DDP
@@ -985,8 +847,8 @@ if __name__ == "__main__":
         ngpu = torch.distributed.get_world_size()
     else:
         ngpu = 1
-    accumulate_grad_batches = training_cfg["accumulate_grad_batches"]
-    scale_lr = training_cfg["scale_lr"]
+    accumulate_grad_batches = training_cfg.accumulate_grad_batches
+    scale_lr = training_cfg.scale_lr
     if scale_lr:
         model.module.learning_rate = (
             accumulate_grad_batches * ngpu * bs * base_lr
@@ -1053,12 +915,12 @@ if __name__ == "__main__":
     signal.signal(signal.SIGUSR2, divein)
 
     # Run
-    if training_cfg["train"]:
+    if training_cfg.train:
         try:
-            trainer.fit(training_cfg["epochs"])
+            trainer.fit(training_cfg.epochs)
         except Exception:
             melk()
             raise
-    if not training_cfg["no_test"]:
+    if not training_cfg.no_test:
         test_loader = data.test_dataloader()
         trainer.test(test_loader)

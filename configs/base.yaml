@@ -26,14 +26,20 @@ training:
   train: true
   no_test: false
   scale_lr: true
+  debug: false
 
 logging:
-  logdir: /scratch/current/declan/logs/ldm-test/
-  name: base_experiment
-  resume: null
+  logdir: logs
+  name: ""
+  resume: ""
   postfix: ""
 
 wandb:
   entity: sar-diffusion
-  project: latent-diffusion
-  enabled: true 
+  project: simple-vae-testing
+  name: test-run
+  enabled: true
+
+# Model configuration will be loaded from the specific config file
+model:
+  base_learning_rate: 1.0e-4 
